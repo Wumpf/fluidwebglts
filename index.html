@@ -1,0 +1,151 @@
+﻿<!DOCTYPE html>
+
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Navier Stokes Fluid Sim</title>
+
+  <!-- Shader -->
+  <script id="screentri-vs" type="x-shader/x-vertex">
+    attribute vec2 VertexPosition;
+    varying vec2 Texcoord;
+
+    void main(void)
+    {
+      gl_Position.xy = VertexPosition;
+      gl_Position.zw = vec2(1.0, 1.0);
+      Texcoord =  VertexPosition*0.5 + 0.5;
+      //Texcoord.y = 1.0 - Texcoord.y;
+    }
+  </script>
+
+  <script id="advect" type="x-shader/x-fragment">
+    precision highp float;
+
+    uniform sampler2D OldVelocity;
+    uniform float DeltaT;
+    uniform vec2 InverseGridSize;
+
+    varying vec2 Texcoord;
+
+    void main(void)
+    {
+      // Simple advection by backstep.
+      // Todo: Try better methods like MacCormack (http://http.developer.nvidia.com/GPUGems3/gpugems3_ch30.html)
+      vec2 samplePos = Texcoord - texture2D(OldVelocity, Texcoord).xy * DeltaT * InverseGridSize;
+      vec2 outputVelocity = texture2D(OldVelocity, samplePos).xy;
+      // Special force: Flow from left to right
+      if(Texcoord.x < 0.05 && Texcoord.y < 0.7 && Texcoord.y > 0.3)
+        outputVelocity.x += (0.05 - Texcoord.x) * 10000.0 * DeltaT;
+
+      if(Texcoord.x > 1.0 - InverseGridSize.x * 2.0)
+        outputVelocity = vec2(0.0);
+
+      vec2 toCenter = vec2(0.2, 0.5) - Texcoord;
+      toCenter.x *= InverseGridSize.y / InverseGridSize.x;
+      if(dot(toCenter, toCenter) < 0.002)
+        outputVelocity = vec2(0.0, 0.0);
+
+      gl_FragColor = vec4(outputVelocity, 0.0, 0.0);
+    }
+  </script>
+
+  <script id="divergence" type="x-shader/x-fragment">
+    precision highp float;
+
+    uniform sampler2D Velocity;
+    uniform vec2 InverseGridSize;
+
+    varying vec2 Texcoord;
+
+    void main(void)
+    {
+      float x0 = texture2D(Velocity, Texcoord - vec2(InverseGridSize.x, 0)).x;
+      float x1 = texture2D(Velocity, Texcoord + vec2(InverseGridSize.x, 0)).x;
+      float y0 = texture2D(Velocity, Texcoord - vec2(0, InverseGridSize.y)).y;
+      float y1 = texture2D(Velocity, Texcoord + vec2(0, InverseGridSize.y)).y;
+      float divergence = ((x1-x0) + (y1-y0)) * 0.5;
+
+      gl_FragColor = vec4(divergence);
+    }
+  </script>
+
+  <script id="jacobiIteration" type="x-shader/x-fragment">
+    precision highp float;
+
+    uniform sampler2D Divergence;
+    uniform sampler2D OldPressure;
+    uniform vec2 InverseGridSize;
+
+    varying vec2 Texcoord;
+
+    float samplePressure(vec2 pos)
+    {
+      // Boundary condition: Vanish for right wall, wrap for everything else (automatically by texture sampler).
+      if(pos.x > 1.0 - InverseGridSize.x * 2.0)
+        return 0.0;
+
+      vec2 toCenter = vec2(0.2, 0.5) - Texcoord;
+      toCenter.x *= InverseGridSize.y / InverseGridSize.x;
+      if(dot(toCenter, toCenter) < 0.002)
+        return 0.0;
+      else
+        return texture2D(OldPressure, pos).x;
+    }
+
+    void main(void)
+    {
+      float div = texture2D(Divergence, Texcoord).x;
+      float x0 = samplePressure(Texcoord - vec2(InverseGridSize.x, 0));
+      float x1 = samplePressure(Texcoord + vec2(InverseGridSize.x, 0));
+      float y0 = samplePressure(Texcoord - vec2(0, InverseGridSize.y));
+      float y1 = samplePressure(Texcoord + vec2(0, InverseGridSize.y));
+      gl_FragColor = vec4((x0 + x1 + y0 + y1 - div) * 0.25, 0, 0, 0);
+    }
+  </script>
+
+  <script id="subtractPressureGradient" type="x-shader/x-fragment">
+    precision highp float;
+
+    uniform sampler2D OldVelocity;
+    uniform sampler2D Pressure;
+    uniform vec2 InverseGridSize;
+
+    varying vec2 Texcoord;
+
+    void main(void)
+    {
+      float x0 = texture2D(Pressure, Texcoord - vec2(InverseGridSize.x, 0)).x;
+      float x1 = texture2D(Pressure, Texcoord + vec2(InverseGridSize.x, 0)).x;
+      float y0 = texture2D(Pressure, Texcoord - vec2(0, InverseGridSize.y)).x;
+      float y1 = texture2D(Pressure, Texcoord + vec2(0, InverseGridSize.y)).x;
+      vec2 pressureGradient = (vec2(x1, y1) - vec2(x0, y0));
+      vec2 oldV = texture2D(OldVelocity, Texcoord).xy;
+      gl_FragColor = vec4(oldV - pressureGradient * 0.5, 1.0, 1.0);
+    }
+  </script>
+
+  <script id="render-fs" type="x-shader/x-fragment">
+    precision highp float;
+
+    uniform sampler2D Velocity;
+    uniform vec2 InverseGridSize;
+
+    varying vec2 Texcoord;
+
+    void main(void)
+    {
+      vec2 velo = texture2D(Velocity, Texcoord).xy;
+      gl_FragColor = vec4(sqrt(velo * velo) * 0.01, 0.0, 1.0);
+    }
+  </script>
+
+  <script src="app.js"></script>
+
+</head>
+
+<body>
+  <canvas id="canvas" style="border: none;" width="1024" height="512"></canvas>
+</body>
+
+</html>
